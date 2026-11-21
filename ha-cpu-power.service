@@ -1,0 +1,15 @@
+[Unit]
+Description=ha-cpu-power: CPU frequency and power control for Home Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/sbin/modprobe -q intel_rapl_msr
+ExecStart=/opt/ha-cpu-power/venv/bin/python /opt/ha-cpu-power/ha_cpu_power.py -c /etc/ha-cpu-power.conf
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

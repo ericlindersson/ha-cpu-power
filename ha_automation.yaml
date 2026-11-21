@@ -1,34 +1,39 @@
-# Klistra in i Home Assistant: Inställningar → Automationer → Ny → ⋮ → Redigera i YAML
-# Byt gränserna (kr/kWh) efter tycke. Entiteten select.server_cpu_profil skapas
-# automatiskt när tjänsten startat (enhetsnamn "Server CPU" + "Profil").
-alias: Server-CPU efter elpris
-description: Sätter CPU-profil på servern beroende på Nordpool-priset
+# Home Assistant: Settings > Automations > Create > ⋮ > Edit in YAML, paste this.
+#
+# Change:
+#   - sensor.nordpool_kwh_se3_sek_3_10_025 to your own price sensor
+#   - select.server_cpu_profile to your profile entity
+#     (named after the device: "Server CPU" + "Profile", or "Profil" with language = sv)
+#   - the profile names if you use language = sv (Eco / Balans / Max)
+#   - the price limits
+alias: Server CPU by electricity price
+description: Picks a CPU profile on the server from the spot price
 mode: single
 triggers:
   - trigger: state
     entity_id: sensor.nordpool_kwh_se3_sek_3_10_025
   - trigger: state
-    entity_id: select.server_cpu_profil
-    from: unavailable          # tjänsten/servern har startat om
+    entity_id: select.server_cpu_profile
+    from: unavailable          # the service or server restarted
   - trigger: homeassistant
     event: start
 variables:
-  pris: "{{ states('sensor.nordpool_kwh_se3_sek_3_10_025') | float(0) }}"
-  dyrt: 2.00                    # kr/kWh och uppåt → Eco
-  mellan: 1.00                  # kr/kWh och uppåt → Balans, annars Max
-  profil: >
-    {% if pris >= dyrt %}Eco{% elif pris >= mellan %}Balans{% else %}Max{% endif %}
+  price: "{{ states('sensor.nordpool_kwh_se3_sek_3_10_025') | float(0) }}"
+  expensive: 2.00               # price per kWh and above -> Eco
+  medium: 1.00                  # price per kWh and above -> Balanced, below -> Max
+  profile: >
+    {% if price >= expensive %}Eco{% elif price >= medium %}Balanced{% else %}Max{% endif %}
 conditions:
   - condition: template
-    value_template: "{{ states('select.server_cpu_profil') not in ['unavailable', 'unknown', profil] }}"
+    value_template: "{{ states('select.server_cpu_profile') not in ['unavailable', 'unknown', profile] }}"
 actions:
   - action: select.select_option
     target:
-      entity_id: select.server_cpu_profil
+      entity_id: select.server_cpu_profile
     data:
-      option: "{{ profil }}"
+      option: "{{ profile }}"
 
-# Alternativ: relativt dagens snittpris i stället för fasta gränser
-#   profil: >
-#     {% set snitt = state_attr('sensor.nordpool_kwh_se3_sek_3_10_025', 'average') | float(pris) %}
-#     {% if pris > snitt * 1.3 %}Eco{% elif pris > snitt %}Balans{% else %}Max{% endif %}
+# Alternative: relative to today's average instead of fixed limits (Nordpool custom integration)
+#   profile: >
+#     {% set avg = state_attr('sensor.nordpool_kwh_se3_sek_3_10_025', 'average') | float(price) %}
+#     {% if price > avg * 1.3 %}Eco{% elif price > avg %}Balanced{% else %}Max{% endif %}

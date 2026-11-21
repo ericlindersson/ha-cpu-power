@@ -1,0 +1,60 @@
+# ha-cpu-power configuration example.
+# Easiest is to let the wizard create /etc/ha-cpu-power.conf for you:
+#   sudo /opt/ha-cpu-power/venv/bin/python /opt/ha-cpu-power/ha_cpu_power.py --setup
+
+[general]
+# Seconds between updates to Home Assistant
+interval = 5
+# Entity names in Home Assistant: en or sv
+language = en
+# Profile applied when the service starts (empty = leave settings alone)
+startup_profile = Balanced
+# Put the original settings back when the service stops
+restore_on_exit = true
+# RAPL power limit control: auto (test at start), on, off
+power_limit_control = auto
+power_limit_min = 20
+power_limit_max = 140
+# Multiply RAPL power readings, e.g. to calibrate against a smart plug
+power_scale = 1.0
+# Temperature input file, empty = auto-detect
+temp_sensor =
+
+[mqtt]
+host = 192.168.1.10
+port = 1883
+username = cpupower
+password = change-me
+tls = false
+
+[homeassistant]
+device_name = Server CPU
+# Unique per server, default is the hostname
+node_id =
+discovery_prefix = homeassistant
+
+# Profiles appear as a select entity in Home Assistant.
+#   max_freq     MHz, 0 = hardware maximum
+#   turbo        on / off
+#   power_limit  W (only used if the power limit is controllable)
+#   governor     see --status; schedutil for intel_cpufreq/acpi-cpufreq,
+#                powersave for intel_pstate/amd-pstate-epp (active mode)
+#   epp          energy performance preference, if available
+
+[profile Eco]
+max_freq = 1900
+turbo = off
+power_limit = 65
+governor = schedutil
+
+[profile Balanced]
+max_freq = 3000
+turbo = off
+power_limit = 100
+governor = schedutil
+
+[profile Max]
+max_freq = 0
+turbo = on
+power_limit = 140
+governor = schedutil
