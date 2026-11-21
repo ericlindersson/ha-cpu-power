@@ -79,11 +79,11 @@ class Cpu:
                  power_limit_control="auto", temp_sensor="", probe=True):
         self.cpus = sorted(glob.glob(f"{SYS}/devices/system/cpu/cpu[0-9]*/cpufreq"),
                            key=lambda p: int(re.search(r"cpu(\d+)/cpufreq", p).group(1)))
-        if not self.cpus:
-            raise RuntimeError("No cpufreq interface found in /sys. Virtual machines and "
-                               "containers usually lack it; run this on the host.")
-        c0 = self.cpus[0]
-        self.driver = rd(f"{c0}/scaling_driver", "?")
+        # No cpufreq: frequency control is off (BIOS/BMC-controlled power management,
+        # or a VM). Power reading, RAPL power limit and temperature can still work.
+        self.has_cpufreq = bool(self.cpus)
+        c0 = self.cpus[0] if self.cpus else "/nonexistent"
+        self.driver = rd(f"{c0}/scaling_driver", "none")
         self.governors = (rd(f"{c0}/scaling_available_governors", "") or "").split()
         self.is_root = os.geteuid() == 0
         self.power_scale = power_scale or 1.0
@@ -99,8 +99,10 @@ class Cpu:
             self.turbo_path, self.turbo_inv = None, False
 
         # Frequency ranges (per CPU, hybrid CPUs have different ones)
-        self.max_noturbo = max(self._cpuinfo_max())
-        if probe and self.turbo_path and self.is_root and self.turbo() is False:
+        self.max_noturbo = max(self._cpuinfo_max(), default=None)
+        if not self.has_cpufreq:
+            maxes = []
+        elif probe and self.turbo_path and self.is_root and self.turbo() is False:
             # Some drivers hide turbo frequencies while turbo is off: peek with turbo on
             try:
                 self.set_turbo(True, quiet=True)
@@ -112,8 +114,8 @@ class Cpu:
             maxes = self._cpuinfo_max()
         self.ranges = {c: (int(rd(f"{c}/cpuinfo_min_freq", "0")) // 1000, m)
                        for c, m in zip(self.cpus, maxes)}
-        self.hw_min = min(r[0] for r in self.ranges.values())
-        self.hw_max = max(r[1] for r in self.ranges.values())
+        self.hw_min = min((r[0] for r in self.ranges.values()), default=None)
+        self.hw_max = max((r[1] for r in self.ranges.values()), default=None)
         bf = rd(f"{c0}/base_frequency")
         self.base_freq = int(bf) // 1000 if bf else None
 
@@ -156,16 +158,24 @@ class Cpu:
 
     # ---- frequency ----
     def freq_cur(self):
-        vals = [int(rd(f"{c}/scaling_cur_freq", "0") or 0) // 1000 for c in self.cpus]
+        if self.has_cpufreq:
+            vals = [int(rd(f"{c}/scaling_cur_freq", "0") or 0) // 1000 for c in self.cpus]
+        else:  # /proc/cpuinfo works without cpufreq on x86
+            vals = [int(float(line.split(":")[1])) for line in (rd(f"{PROC}/cpuinfo", "") or "").splitlines()
+                    if line.startswith("cpu MHz")]
         vals = [v for v in vals if v > 0]
         if not vals:
             return None, None
         return round(sum(vals) / len(vals)), max(vals)
 
     def max_freq(self):
+        if not self.has_cpufreq:
+            return None
         return max(int(rd(f"{c}/scaling_max_freq", "0")) // 1000 for c in self.cpus)
 
     def set_max_freq(self, mhz):
+        if not self.has_cpufreq:
+            raise ValueError("frequency control not available (no cpufreq)")
         mhz = int(mhz)
         for c, (lo, hi) in self.ranges.items():
             wr(f"{c}/scaling_max_freq", max(lo, min(hi, mhz)) * 1000)
@@ -173,7 +183,7 @@ class Cpu:
 
     # ---- governor / EPP ----
     def governor(self):
-        return rd(f"{self.cpus[0]}/scaling_governor")
+        return rd(f"{self.cpus[0]}/scaling_governor") if self.cpus else None
 
     def set_governor(self, gov):
         if gov not in self.governors:
@@ -329,6 +339,20 @@ def _safe(fn, *a):
         fn(*a)
     except Exception as e:  # noqa: BLE001
         log.warning("Restore failed: %s", e)
+
+
+NO_CPUFREQ_HELP = """\
+No cpufreq driver is loaded, so frequency, turbo and governor can't be controlled.
+On a physical server this almost always means the BIOS handles power management itself.
+To get full control, set it to OS control in the BIOS/UEFI and reboot:
+  Dell PowerEdge   System Profile Settings > Custom, CPU Power Management: OS DBPM
+  HPE ProLiant     Power and Performance Options > Power Regulator: OS Control Mode
+  Supermicro       CPU Configuration > Advanced Power Management: Power Technology Custom,
+                   EIST (P-states) Enable, Hardware P-States: Disable or Native
+  Lenovo           Operating Modes > Custom, CPU P-state Control: Legacy/Autonomous
+Then check: ls /sys/devices/system/cpu/cpu0/cpufreq
+Until then the power limit (RAPL) can still be used if the CPU accepts it.
+"""
 
 
 def find_temp_sensors(override=""):
@@ -487,9 +511,12 @@ class Bridge:
         sensor("power_pkg", "W", "power") if self.cpu.pkgs else remove("sensor", "power_pkg")
         sensor("power_dram", "W", "power") if self.cpu.drams else remove("sensor", "power_dram")
 
-        ent("number", "max_freq", value_template="{{ value_json.max_freq }}",
-            command_topic=f"{self.base}/set/max_freq", min=self.cpu.hw_min, max=self.cpu.hw_max,
-            step=100, unit_of_measurement="MHz", mode="slider", icon="mdi:speedometer")
+        if self.cpu.has_cpufreq:
+            ent("number", "max_freq", value_template="{{ value_json.max_freq }}",
+                command_topic=f"{self.base}/set/max_freq", min=self.cpu.hw_min, max=self.cpu.hw_max,
+                step=100, unit_of_measurement="MHz", mode="slider", icon="mdi:speedometer")
+        else:
+            remove("number", "max_freq")
         if self.cpu.pl_ok:
             ent("number", "power_limit", value_template="{{ value_json.power_limit }}",
                 command_topic=f"{self.base}/set/power_limit", min=self.cpu.pl_min, max=self.cpu.pl_max,
@@ -501,7 +528,9 @@ class Bridge:
                 command_topic=f"{self.base}/set/turbo", icon="mdi:rocket-launch")
         else:
             remove("switch", "turbo")
-        if self.cpu.governors:
+        if not self.cpu.governors:
+            remove("select", "governor")
+        else:
             ent("select", "governor", value_template="{{ value_json.governor }}",
                 command_topic=f"{self.base}/set/governor", options=self.cpu.governors, icon="mdi:tune")
         if self.cpu.epp_opts:
@@ -568,7 +597,7 @@ class Bridge:
             steps.append(("epp", lambda: self.cpu.set_epp(p["epp"])))
         if p["turbo"] is not None and self.cpu.turbo_path:
             steps.append(("turbo", lambda: self.cpu.set_turbo(p["turbo"])))
-        if p["max_freq"] is not None:
+        if p["max_freq"] is not None and self.cpu.has_cpufreq:
             steps.append(("max_freq", lambda: self.cpu.set_max_freq(p["max_freq"] or self.cpu.hw_max)))
         if p["power_limit"] is not None and self.cpu.pl_ok:
             steps.append(("power_limit", lambda: self.cpu.set_power_limit(p["power_limit"])))
@@ -624,11 +653,15 @@ def print_status(cpu, cfg):
     print(f"CPU:            {cpu_model()}")
     print(f"Virtualized:    {yn(is_virtual())}")
     print(f"Driver:         {cpu.driver}")
-    print(f"Frequency:      {cpu.hw_min}-{cpu.hw_max} MHz"
-          + (f" (base {cpu.base_freq} MHz)" if cpu.base_freq else f" (max without turbo {cpu.max_noturbo} MHz)")
-          + f", limit now {cpu.max_freq()} MHz")
+    if cpu.has_cpufreq:
+        print(f"Frequency:      {cpu.hw_min}-{cpu.hw_max} MHz"
+              + (f" (base {cpu.base_freq} MHz)" if cpu.base_freq else f" (max without turbo {cpu.max_noturbo} MHz)")
+              + f", limit now {cpu.max_freq()} MHz")
+    else:
+        print("Frequency:      no cpufreq driver, frequency control not available")
     print(f"Current:        avg {avg} MHz, peak {peak} MHz")
-    print(f"Governors:      {', '.join(cpu.governors)} (active: {cpu.governor()}, recommended: {cpu.pick_governor()})")
+    if cpu.governors:
+        print(f"Governors:      {', '.join(cpu.governors)} (active: {cpu.governor()}, recommended: {cpu.pick_governor()})")
     print(f"Energy pref.:   {', '.join(cpu.epp_opts) + f' (active: {cpu.epp()})' if cpu.epp_opts else 'not available'}")
     print(f"Turbo:          {'not available' if cpu.turbo_path is None else ('on' if cpu.turbo() else 'off')}")
     print(f"RAPL:           {'package ' + str(len(cpu.pkgs)) + (', dram' if cpu.drams else '') if cpu.pkgs else 'not available'}")
@@ -704,6 +737,11 @@ def test_mqtt(host, port, user, password, tls):
 
 def make_profiles(cpu, lang, tdp):
     eco, bal, mx = TEXT[lang]["profiles"]
+    if not cpu.has_cpufreq:  # only the power limit can be controlled
+        if not tdp:
+            return {}
+        return {eco: {"power_limit": round(tdp * 0.45 / 5) * 5}, bal: {"power_limit": round(tdp * 0.7 / 5) * 5},
+                mx: {"power_limit": tdp}}
     gov = cpu.pick_governor()
     base = cpu.base_freq or cpu.max_noturbo or cpu.hw_max
     if base >= cpu.hw_max and cpu.turbo_path is None:  # no turbo: spread over the range
@@ -729,8 +767,8 @@ def render_config(v, profiles, cpu):
     lines = [
         "# ha-cpu-power configuration (generated by --setup, safe to edit)",
         f"# CPU: {cpu_model()}  driver: {cpu.driver}",
-        f"# Frequency range {cpu.hw_min}-{cpu.hw_max} MHz"
-        + (f", base {cpu.base_freq} MHz" if cpu.base_freq else ""),
+        (f"# Frequency range {cpu.hw_min}-{cpu.hw_max} MHz" + (f", base {cpu.base_freq} MHz" if cpu.base_freq else ""))
+        if cpu.has_cpufreq else "# No cpufreq driver: frequency control not available",
         "",
         "[general]",
         "# Seconds between updates to Home Assistant",
@@ -772,7 +810,7 @@ def render_config(v, profiles, cpu):
         lines.append("#   epp          " + ", ".join(cpu.epp_opts))
     for name, p in profiles.items():
         lines += ["", f"[profile {name}]"]
-        if p.get("max_freq") is not None:
+        if p.get("max_freq") is not None and cpu.has_cpufreq:
             lines.append(f"max_freq = {p['max_freq']}")
         if p.get("turbo") is not None and cpu.turbo_path:
             lines.append(f"turbo = {b(p['turbo'])}")
@@ -801,6 +839,10 @@ def setup(path, defaults_from=None):
         return 1
     print_status(cpu, configparser.ConfigParser())
     print()
+    if not cpu.has_cpufreq:
+        print(NO_CPUFREQ_HELP)
+        if not cpu.pl_ok:
+            print("Nothing can be controlled right now, only monitored (power, temperature, load).\n")
     if is_virtual() and not ask_yn("This looks like a virtual machine; settings may have no effect. Continue?", False):
         return 1
 
@@ -832,14 +874,14 @@ def setup(path, defaults_from=None):
             break
 
     print("\n--- Power ---")
-    v["power_limit_control"] = "auto" if cpu.pl_ok else "off"
+    v["power_limit_control"] = "auto" if cpu.pl_ok else ("off" if cpu.has_cpufreq else "auto")
     tdp = None
     if cpu.pl_ok:
-        tdp = ask_int("Highest power limit you want to allow (W), used by the Max profile",
+        tdp = ask_int("Highest power limit you want to allow (W per CPU socket), used by the Max profile",
                       og.get("power_limit_max", "") or cpu.pl_default or 100)
     elif cpu.pkgs:
-        print("The RAPL power limit is not controllable here (locked by BIOS or unsupported).\n"
-              "Profiles will use max frequency and turbo instead.")
+        print("The RAPL power limit is not controllable here (locked by BIOS/BMC or unsupported)."
+              + ("\nProfiles will use max frequency and turbo instead." if cpu.has_cpufreq else ""))
     v["power_limit_min"] = og.get("power_limit_min", "20")
     v["power_limit_max"] = tdp or og.get("power_limit_max", "") or (cpu.pl_default or 0)
     v["power_scale"] = og.get("power_scale", "1.0")
@@ -851,7 +893,7 @@ def setup(path, defaults_from=None):
     if old_profiles and not ask_yn("Replace existing profiles with ones generated for this hardware?", True):
         profiles = old_profiles
     for name, p in profiles.items():
-        bits = [f"max {p['max_freq'] or cpu.hw_max} MHz"]
+        bits = [f"max {p['max_freq'] or cpu.hw_max} MHz"] if cpu.has_cpufreq and p.get("max_freq") is not None else []
         if cpu.turbo_path and p.get("turbo") is not None:
             bits.append("turbo " + ("on" if p["turbo"] else "off"))
         if p.get("power_limit") and cpu.pl_ok:
@@ -862,9 +904,14 @@ def setup(path, defaults_from=None):
             bits.append(p["epp"])
         print(f"  {name:9} {', '.join(bits)}")
     names = list(profiles)
-    default_start = og.get("startup_profile", "") if og.get("startup_profile", "") in names else names[min(1, len(names) - 1)]
-    s = ask(f"Profile to apply at start ({'/'.join(names)}, or 'none')", default_start)
-    v["startup_profile"] = "" if s.lower() == "none" else (s if s in names else default_start)
+    if not names:
+        print("  (no profiles, nothing to control)")
+    if names:
+        default_start = og.get("startup_profile", "") if og.get("startup_profile", "") in names else names[min(1, len(names) - 1)]
+        s = ask(f"Profile to apply at start ({'/'.join(names)}, or 'none')", default_start)
+        v["startup_profile"] = "" if s.lower() == "none" else (s if s in names else default_start)
+    else:
+        v["startup_profile"] = ""
     v["restore_on_exit"] = ask_yn("Restore original settings when the service stops?", og.getboolean("restore_on_exit", True))
     v["interval"] = og.get("interval", "5")
 
@@ -919,7 +966,7 @@ def main():
         log.warning("Not running as root: changing settings will fail")
 
     cpu = cpu_from_config(cfg)
-    log.info("ha-cpu-power %s: %s, %d CPUs, %d-%d MHz, turbo %s, power limit %s, temp %s",
+    log.info("ha-cpu-power %s: driver %s, %d CPUs, %s-%s MHz, turbo %s, power limit %s, temp %s",
              VERSION, cpu.driver, len(cpu.cpus), cpu.hw_min, cpu.hw_max,
              "yes" if cpu.turbo_path else "no", "yes" if cpu.pl_ok else "no",
              "yes" if cpu.temp_paths else "no")

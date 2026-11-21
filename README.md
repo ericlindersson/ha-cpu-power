@@ -19,7 +19,7 @@ Välj `sv` i installationsguiden för svenska entitetsnamn.*
 | Turbo | switch | Intel turbo / AMD boost |
 | Governor | select | Available cpufreq governors |
 | Energy preference | select | EPP, when the driver supports it (intel_pstate, amd-pstate) |
-| Power limit | number | RAPL package limit in W, only shown if the CPU accepts it |
+| Power limit | number | RAPL limit in W per CPU socket, only shown if the CPU accepts it |
 | Frequency average / peak core | sensor | MHz |
 | CPU power / RAM power | sensor | W, from RAPL |
 | Temperature | sensor | °C |
@@ -37,7 +37,8 @@ Välj `sv` i installationsguiden för svenska entitetsnamn.*
 | Intel | ✅ | ✅ | ✅ (HWP CPUs) | ✅ | ✅ unless locked in BIOS | ✅ coretemp |
 | AMD Zen | ✅ | ✅ | ✅ (amd-pstate) | ✅ recent kernels | ❌ | ✅ k10temp / zenpower |
 | ARM (e.g. Raspberry Pi) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ thermal zone |
-| Virtual machine / container | ❌ usually no cpufreq – run it on the host | | | | | |
+| Server with BIOS-controlled power management | ❌ (see troubleshooting) | ❌ | ❌ | ✅ | ✅ unless locked | ✅ |
+| Virtual machine / container | ❌ run it on the host | | | | | |
 
 Hybrid CPUs (P/E cores) and multi-socket systems are supported. Entities that the hardware can't
 provide are simply not created.
@@ -131,6 +132,13 @@ Replace the price sensor and the select entity with your own.
 
 ## Troubleshooting
 
+- **"No cpufreq driver loaded" on a physical server:** the BIOS controls power management itself,
+  so Linux can't change the frequency. ha-cpu-power still works with the RAPL power limit, power and
+  temperature. For full control set power management to OS control in the BIOS and reboot:
+  Dell *System Profile → Custom, CPU Power Management: OS DBPM*,
+  HPE *Power Regulator: OS Control Mode*,
+  Supermicro *Advanced Power Management → Power Technology: Custom, EIST enabled*.
+  Check afterwards with `ls /sys/devices/system/cpu/cpu0/cpufreq`.
 - **CPU stuck at its lowest frequency:** with `intel_cpufreq` or `acpi-cpufreq` the `powersave`
   governor pins the CPU to minimum. Use `schedutil` (the wizard picks the right one).
 - **No power limit entity:** the BIOS has locked the RAPL limit, or the CPU doesn't support it (AMD).

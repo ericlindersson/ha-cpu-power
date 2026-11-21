@@ -49,11 +49,17 @@ say "This installs to $DIR, writes $CONF and adds a systemd service."
 
 # ---------------------------------------------------------------- checks
 step "Checking the system"
-[ -d /sys/devices/system/cpu/cpu0/cpufreq ] || {
-    say "No cpufreq interface found (/sys/devices/system/cpu/cpu0/cpufreq)."
-    say "Virtual machines and containers usually lack it: install on the host instead."
+VIRT=none
+have systemd-detect-virt && VIRT=$(systemd-detect-virt 2>/dev/null || true)
+if [ -n "$VIRT" ] && [ "$VIRT" != none ]; then
+    say "This is a virtual machine or container ($VIRT). CPU settings can't be changed from here:"
+    say "install on the host (e.g. the Proxmox node) instead."
     yes_no "Continue anyway?" N || exit 1
-}
+elif [ ! -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+    say "No cpufreq driver loaded: the BIOS probably controls CPU power management."
+    say "Frequency control won't be available, but power limit and monitoring may work."
+    say "The setup wizard explains how to enable OS control in the BIOS."
+fi
 have systemctl || die "systemd is required for the service"
 have python3 || die "python3 is required"
 say "python3: $(python3 --version 2>&1)"
