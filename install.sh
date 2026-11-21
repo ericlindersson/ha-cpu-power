@@ -2,6 +2,7 @@
 # ha-cpu-power installer / setup guide
 #   sudo sh install.sh              install or update, then run the setup wizard
 #   sudo sh install.sh --uninstall  remove service, program and (optionally) config
+# (as root, e.g. on Proxmox, leave out sudo)
 set -e
 
 DIR=${HCP_DIR:-/opt/ha-cpu-power}
@@ -27,7 +28,7 @@ yes_no() { # yes_no "question" Y|N
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-[ "$(id -u)" -eq 0 ] || die "run as root: sudo sh install.sh"
+[ "$(id -u)" -eq 0 ] || die "run as root: sudo sh install.sh (or as root: sh install.sh)"
 
 # ---------------------------------------------------------------- uninstall
 if [ "$1" = "--uninstall" ]; then
@@ -66,8 +67,10 @@ if ! python3 -c 'import venv, ensurepip' 2>/dev/null; then
     else PKG=""; fi
     [ -n "$PKG" ] || die "install the Python venv package for your distribution and run again"
     if yes_no "Install it now with: $PKG ?" Y; then
-        have apt-get && apt-get update -qq
-        $PKG
+        # apt-get update may fail on one repo (e.g. Proxmox enterprise repo without subscription)
+        if have apt-get; then apt-get update -qq || say "(apt-get update reported errors, trying anyway)"; fi
+        $PKG || die "could not install Python venv support. On Proxmox without a subscription,
+       disable the enterprise repo and enable the no-subscription repo, then run again."
     else
         die "Python venv support is needed"
     fi

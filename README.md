@@ -52,6 +52,17 @@ cd ha-cpu-power
 sudo sh install.sh
 ```
 
+**Proxmox VE:** you're root and there is no `sudo` or `git` by default:
+
+```sh
+wget -qO- https://github.com/ericlindersson/ha-cpu-power/archive/refs/heads/main.tar.gz | tar xz
+cd ha-cpu-power-main
+sh install.sh
+```
+
+Install on the Proxmox host itself, not in a VM or container (they have no CPU frequency control).
+Without a subscription, enable the *no-subscription* repository so `apt` can install `python3-venv`.
+
 The installer:
 
 1. checks the system and installs Python venv support if it's missing
