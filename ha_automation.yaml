@@ -1,0 +1,34 @@
+# Klistra in i Home Assistant: Inställningar → Automationer → Ny → ⋮ → Redigera i YAML
+# Byt gränserna (kr/kWh) efter tycke. Entiteten select.server_cpu_profil skapas
+# automatiskt när tjänsten startat (enhetsnamn "Server CPU" + "Profil").
+alias: Server-CPU efter elpris
+description: Sätter CPU-profil på servern beroende på Nordpool-priset
+mode: single
+triggers:
+  - trigger: state
+    entity_id: sensor.nordpool_kwh_se3_sek_3_10_025
+  - trigger: state
+    entity_id: select.server_cpu_profil
+    from: unavailable          # tjänsten/servern har startat om
+  - trigger: homeassistant
+    event: start
+variables:
+  pris: "{{ states('sensor.nordpool_kwh_se3_sek_3_10_025') | float(0) }}"
+  dyrt: 2.00                    # kr/kWh och uppåt → Eco
+  mellan: 1.00                  # kr/kWh och uppåt → Balans, annars Max
+  profil: >
+    {% if pris >= dyrt %}Eco{% elif pris >= mellan %}Balans{% else %}Max{% endif %}
+conditions:
+  - condition: template
+    value_template: "{{ states('select.server_cpu_profil') not in ['unavailable', 'unknown', profil] }}"
+actions:
+  - action: select.select_option
+    target:
+      entity_id: select.server_cpu_profil
+    data:
+      option: "{{ profil }}"
+
+# Alternativ: relativt dagens snittpris i stället för fasta gränser
+#   profil: >
+#     {% set snitt = state_attr('sensor.nordpool_kwh_se3_sek_3_10_025', 'average') | float(pris) %}
+#     {% if pris > snitt * 1.3 %}Eco{% elif pris > snitt %}Balans{% else %}Max{% endif %}
